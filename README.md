@@ -32,6 +32,9 @@ The application starts with a connection setup dialog where you enter your Jetso
 - **RAM Graph**: Memory usage visualization
 - **Temperature Graph**: Thermal Junction, CPU, and GPU temperatures
 
+#### Example Screenshot
+![Jetson Usage Monitor Screenshot](screenshot.png)
+
 ## Requirements
 
 - Python 3.7+

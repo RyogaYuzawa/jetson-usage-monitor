@@ -390,7 +390,10 @@ class GraphWidget(QWidget):
             self.ax.set_yticklabels([str(y) for y in yticks])
 
         if value_source:
-            legend = self.ax.legend()
+            if self.title == "CPU Core Usage":
+                legend = self.ax.legend(ncol=2, loc='upper left', fontsize=9)
+            else:
+                legend = self.ax.legend()
             if legend is not None:
                 legend.get_frame().set_facecolor('#18191c')  # Dark color
                 legend.get_frame().set_edgecolor('none')
@@ -511,12 +514,37 @@ class ConnectionDialog(QWidget):
         self.test_worker = None
         self._config_path = os.path.join(os.path.expanduser("~"), ".jetson_tegrastats_monitor.json")
         self.init_ui()
+        self._apply_dark_theme()
         self._load_last_settings()
+
+    def _apply_dark_theme(self):
+        font_css = "font-family: 'Consolas', 'monospace';"
+        palette_css = f"""
+        QWidget {{ background-color: #1e1f23; color: #e0e0e0; {font_css} }}
+        QGroupBox {{ border: 1px solid #3a3d41; border-radius: 6px; margin-top: 6px; padding: 6px; {font_css} }}
+        QGroupBox::title {{ subcontrol-origin: margin; left: 10px; padding: 0 4px; {font_css} }}
+        QPushButton {{ background:#2d2f33; border:1px solid #4a4d52; border-radius:4px; padding:6px 10px; {font_css} }}
+        QPushButton:hover {{ background:#3a3d41; }}
+        QPushButton:pressed {{ background:#2a2c2f; }}
+        QLineEdit, QSpinBox, QTextEdit {{ background:#2a2c30; border:1px solid #4a4d52; border-radius:4px; {font_css} }}
+        QTabBar::tab {{ background:#2d2f33; padding:6px 12px; border:1px solid #3a3d41; border-bottom:none; {font_css} }}
+        QTabBar::tab:selected {{ background:#3a3d41; }}
+        QScrollBar:vertical {{ background:#2a2c30; width:12px; }}
+        QSlider::groove:horizontal {{ height:6px; background:#3a3d41; border-radius:3px; }}
+        QSlider::handle:horizontal {{ background:#5c97ff; width:14px; margin:-4px 0; border-radius:7px; }}
+        QLabel#statusLabel {{ background:#2a2c30; {font_css} }}
+        """
+        self.setStyleSheet(palette_css)
 
     def init_ui(self):
         self.setWindowTitle("Jetson TegraStats Monitor - Connection")
-        self.setGeometry(300, 300, 400, 300)
-        self.setFixedSize(400, 300)
+        # Enlarged initial dialog window size
+        self.setGeometry(300, 240, 640, 420)
+        self.setFixedSize(640, 420)
+        self.setWindowTitle("Jetson TegraStats Monitor - Connection")
+        # Enlarged initial dialog window size
+        self.setGeometry(300, 240, 640, 420)
+        self.setFixedSize(640, 420)
 
         layout = QVBoxLayout()
 
@@ -558,7 +586,7 @@ class ConnectionDialog(QWidget):
 
         # Status and buttons
         self.status_label = QLabel("Enter connection details and click Connect")
-        self.status_label.setStyleSheet("QLabel { background-color: #f0f0f0; padding: 5px; }")
+        self.status_label.setObjectName("statusLabel")
         self.status_label.setAlignment(Qt.AlignCenter)
         layout.addWidget(self.status_label)
 
@@ -567,6 +595,7 @@ class ConnectionDialog(QWidget):
         self.connect_btn.clicked.connect(self.connect_clicked)
         self.connect_btn.setDefault(True)
         button_layout.addWidget(self.connect_btn)
+
         self.cancel_btn = QPushButton("Cancel")
         self.cancel_btn.clicked.connect(self.close)
         button_layout.addWidget(self.cancel_btn)
@@ -659,6 +688,8 @@ class TegraStatsMonitor(QMainWindow):
         self.interval = interval
         self.worker = None
         self.current_theme = 'dark'
+        # intervalはmsなので、30秒分のデータ点数を計算
+        self._graph_max_points = max(30_000 // max(1, self.interval), 10)  # 最低10点は確保
         self.init_ui()
         self.start_monitoring()
         
@@ -715,11 +746,12 @@ class TegraStatsMonitor(QMainWindow):
         layout.addWidget(current_group)
 
         # 5 Graphs in 2x2+1 grid
-        self.power_graph = GraphWidget("Power Consumption", "Power (W)", fixed_height=260)
-        self.cpu_graph = GraphWidget("CPU Core Usage", "Usage (%)", fixed_height=260)
-        self.gpu_graph = GraphWidget("GPU Usage", "Usage (%)", fixed_height=260)
-        self.ram_graph = GraphWidget("RAM Usage", "Usage (%)", fixed_height=260)
-        self.temp_graph = GraphWidget("Temperature", "Temperature (°C)", fixed_height=260)
+        mp = self._graph_max_points
+        self.power_graph = GraphWidget("Power Consumption", "Power (W)", max_points=mp, fixed_height=260)
+        self.cpu_graph = GraphWidget("CPU Core Usage", "Usage (%)", max_points=mp, fixed_height=260)
+        self.gpu_graph = GraphWidget("GPU Usage", "Usage (%)", max_points=mp, fixed_height=260)
+        self.ram_graph = GraphWidget("RAM Usage", "Usage (%)", max_points=mp, fixed_height=260)
+        self.temp_graph = GraphWidget("Temperature", "Temperature (°C)", max_points=mp, fixed_height=260)
 
         # Set all graph widgets to expanding size policy
         for graph in [self.power_graph, self.cpu_graph, self.gpu_graph, self.ram_graph, self.temp_graph]:
