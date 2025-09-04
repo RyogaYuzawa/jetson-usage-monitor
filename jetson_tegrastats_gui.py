@@ -285,7 +285,7 @@ class GraphWidget(QWidget):
             spine.set_color('#333')
             spine.set_linewidth(1.2)
 
-        self.ax.set_title(self.title, fontsize=13, color='#e0e0e0', pad=12, fontweight='bold')
+        self.ax.set_title(self.title, fontsize=9, color='#e0e0e0', pad=6, fontweight='bold')
         self.ax.set_ylabel(self.ylabel, fontsize=10, color='#b0b0b0', labelpad=10)
         self.ax.grid(True, color='#333', alpha=0.35, linewidth=0.7)
 
@@ -296,8 +296,8 @@ class GraphWidget(QWidget):
         # Remove top/right ticks
         self.ax.tick_params(top=False, right=False)
 
-        # Add padding around plot
-        self.figure.subplots_adjust(left=0.08, right=0.98, top=0.90, bottom=0.18)
+        # Add padding around plot (increase left/bottom to prevent tick label clipping)
+        self.figure.subplots_adjust(left=0.13, right=0.98, top=0.98, bottom=0.22)
 
     def add_data(self, timestamp, **kwargs):
         self.times.append(timestamp)
@@ -664,17 +664,17 @@ class TegraStatsMonitor(QMainWindow):
         
     def init_ui(self):
         self.setWindowTitle(f"Jetson TegraStats Monitor - {self.user}@{self.host}")
-        self.setGeometry(100, 100, 1400, 900)
-        
+        # Set fixed window size (e.g., 1400x900) and disable resizing
+        self.setFixedSize(1400, 900)
+
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
-        
+
         layout = QVBoxLayout()
+        layout.setContentsMargins(24, 24, 24, 24)  # Add more space around the edges
         central_widget.setLayout(layout)
         # (Optional) top style
         self.apply_theme(self.current_theme)
-
-    # ...Controlsタブを削除...
 
         # Current values display
         current_group = QGroupBox("Current Status")
@@ -715,15 +715,19 @@ class TegraStatsMonitor(QMainWindow):
         layout.addWidget(current_group)
 
         # 5 Graphs in 2x2+1 grid
-        self.power_graph = GraphWidget("Power Consumption", "Power (W)")
-        self.cpu_graph = GraphWidget("CPU Core Usage", "Usage (%)")
-        self.gpu_graph = GraphWidget("GPU Usage", "Usage (%)")
-        self.ram_graph = GraphWidget("RAM Usage", "Usage (%)")
-        self.temp_graph = GraphWidget("Temperature", "Temperature (°C)")
+        self.power_graph = GraphWidget("Power Consumption", "Power (W)", fixed_height=260)
+        self.cpu_graph = GraphWidget("CPU Core Usage", "Usage (%)", fixed_height=260)
+        self.gpu_graph = GraphWidget("GPU Usage", "Usage (%)", fixed_height=260)
+        self.ram_graph = GraphWidget("RAM Usage", "Usage (%)", fixed_height=260)
+        self.temp_graph = GraphWidget("Temperature", "Temperature (°C)", fixed_height=260)
+
+        # Set all graph widgets to expanding size policy
+        for graph in [self.power_graph, self.cpu_graph, self.gpu_graph, self.ram_graph, self.temp_graph]:
+            graph.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
 
         graph_grid = QGridLayout()
         graph_grid.setSpacing(12)
-        graph_grid.setContentsMargins(0, 0, 0, 0)
+        graph_grid.setContentsMargins(12, 12, 12, 12)  # Add space around the graphs
         # 2x2 grid
         graph_grid.addWidget(self.power_graph, 0, 0)
         graph_grid.addWidget(self.cpu_graph, 0, 1)
@@ -732,10 +736,16 @@ class TegraStatsMonitor(QMainWindow):
         # Last graph centered below
         graph_grid.addWidget(self.temp_graph, 2, 0, 1, 2)
 
+        # Set stretch so graphs expand and fill space
+        graph_grid.setRowStretch(0, 1)
+        graph_grid.setRowStretch(1, 1)
+        graph_grid.setRowStretch(2, 2)  # Give more space to the temperature graph
+        graph_grid.setColumnStretch(0, 1)
+        graph_grid.setColumnStretch(1, 1)
+
         layout.addLayout(graph_grid)
-
-    # ...Log部分を削除...
-
+        # Add extra stretch to create bottom margin
+        layout.addStretch(1)
     # ---------------- Theme & UI Enhancements -----------------
     def toggle_theme(self):
         self.current_theme = 'light' if self.current_theme == 'dark' else 'dark'
