@@ -14,6 +14,7 @@ Usage example:
 
 import argparse
 import json
+import os
 import re
 import sys
 import time
@@ -29,7 +30,8 @@ import paramiko
 import numpy as np
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QVBoxLayout, QHBoxLayout, 
                              QWidget, QLabel, QPushButton, QLineEdit, QSpinBox,
-                             QTextEdit, QTabWidget, QGridLayout, QGroupBox)
+                             QTextEdit, QTabWidget, QGridLayout, QGroupBox, QCheckBox, QSlider,
+                             QSizePolicy)
 from PyQt5.QtCore import QTimer, QThread, pyqtSignal, Qt
 from PyQt5.QtGui import QFont
 import matplotlib.pyplot as plt
@@ -237,69 +239,176 @@ class TegraStatsWorker(QThread):
 # ----------------------------- Graph Widget -----------------------------
 
 class GraphWidget(QWidget):
-    def __init__(self, title, ylabel, max_points=100):
+    def __init__(self, title, ylabel, max_points=100, smoothing_alpha=0.3, fixed_height=320):
         super().__init__()
         self.title = title
         self.ylabel = ylabel
         self.max_points = max_points
+        self.fixed_height = fixed_height  # 固定高さ (ユーザー要望)
+        
+        # Smoothing parameters
+        # Exponential Moving Average (EMA): s_t = a * x_t + (1-a) * s_{t-1}
+        # O(1) per point per series, minimal CPU & memory.
+        self.smoothing_alpha = smoothing_alpha  # 0 < a <= 1; closer to 1 = less smoothing
+        self.enable_smoothing = True
         
         self.figure = Figure(figsize=(8, 4))
         self.canvas = FigureCanvas(self.figure)
         self.ax = self.figure.add_subplot(111)
         
         layout = QVBoxLayout()
+        layout.setContentsMargins(0,0,0,0)
         layout.addWidget(self.canvas)
         self.setLayout(layout)
+
+        # 固定高さ設定（幅はリサイズ可 / 高さは一定）
+        if self.fixed_height:
+            self.canvas.setFixedHeight(self.fixed_height)
+            self.setMinimumHeight(self.fixed_height + 10)
+            size_policy = QSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
+            self.setSizePolicy(size_policy)
+            self.canvas.setSizePolicy(size_policy)
         
         self.times = deque(maxlen=max_points)
-        self.values = {}
+        # Store raw values
+        self.values_raw = {}
+        # Store smoothed values (EMA)
+        self.values_ema = {}
         
         self.setup_plot()
 
     def setup_plot(self):
-        self.ax.set_title(self.title)
-        self.ax.set_ylabel(self.ylabel)
-        self.ax.grid(True, alpha=0.3)
-        self.ax.tick_params(axis='x', rotation=45)
-        self.figure.tight_layout()
+        # Background and border for Task Manager style
+        self.ax.set_facecolor('#18191c')
+        self.figure.set_facecolor('#18191c')
+        for spine in self.ax.spines.values():
+            spine.set_color('#333')
+            spine.set_linewidth(1.2)
+
+        self.ax.set_title(self.title, fontsize=13, color='#e0e0e0', pad=12, fontweight='bold')
+        self.ax.set_ylabel(self.ylabel, fontsize=10, color='#b0b0b0', labelpad=10)
+        self.ax.grid(True, color='#333', alpha=0.35, linewidth=0.7)
+
+        # X axis: small, light, few ticks
+        self.ax.tick_params(axis='x', labelsize=8, colors='#888', rotation=0, length=0, pad=2)
+        self.ax.tick_params(axis='y', labelsize=9, colors='#aaa', length=3, pad=2)
+
+        # Remove top/right ticks
+        self.ax.tick_params(top=False, right=False)
+
+        # Add padding around plot
+        self.figure.subplots_adjust(left=0.08, right=0.98, top=0.90, bottom=0.18)
 
     def add_data(self, timestamp, **kwargs):
         self.times.append(timestamp)
-        
+
         for key, value in kwargs.items():
-            if key not in self.values:
-                self.values[key] = deque(maxlen=self.max_points)
-            self.values[key].append(value)
-        
+            # Raw queue
+            if key not in self.values_raw:
+                self.values_raw[key] = deque(maxlen=self.max_points)
+            self.values_raw[key].append(value)
+
+            # EMA queue (same maxlen)
+            if key not in self.values_ema:
+                self.values_ema[key] = deque(maxlen=self.max_points)
+                self.values_ema[key].append(value)  # first value = raw
+            else:
+                # Compute EMA incrementally
+                prev = self.values_ema[key][-1]
+                a = self.smoothing_alpha
+                smoothed = a * value + (1 - a) * prev
+                self.values_ema[key].append(smoothed)
+
+    # --- Keep only the latest 30 seconds ---
+        cutoff = timestamp - 30.0
+        while self.times and self.times[0] < cutoff:
+            self.times.popleft()
+            for vq in self.values_raw.values():
+                if vq:
+                    vq.popleft()
+            for vq in self.values_ema.values():
+                if vq:
+                    vq.popleft()
+
         self.update_plot()
 
     def update_plot(self):
         self.ax.clear()
         self.setup_plot()
-        
+
         if len(self.times) < 2:
             self.canvas.draw()
             return
-            
+
         times_list = list(self.times)
-        time_labels = [datetime.fromtimestamp(t).strftime('%H:%M:%S') for t in times_list]
-        
-        for key, values_deque in self.values.items():
+        if len(times_list) > 0:
+            t0 = times_list[0]
+            x_plot = [t - t0 for t in times_list]
+        else:
+            x_plot = []
+
+        value_source = self.values_ema if self.enable_smoothing else self.values_raw
+        stats_texts = []
+        for key, values_deque in value_source.items():
             if len(values_deque) > 0:
                 values_list = list(values_deque)
-                self.ax.plot(range(len(values_list)), values_list, label=key, marker='o', markersize=2)
-        
-        if len(time_labels) > 1:
-            step = max(1, len(time_labels) // 10)
-            tick_positions = range(0, len(time_labels), step)
-            tick_labels = [time_labels[i] for i in tick_positions]
-            self.ax.set_xticks(tick_positions)
-            self.ax.set_xticklabels(tick_labels)
-        
-        if self.values:
-            self.ax.legend()
-        
+                self.ax.plot(x_plot, values_list, label=key, linewidth=1.2)
+                # Calculate Ave, Min, Max (1 decimal place)
+                ave = np.mean(values_list) if values_list else 0
+                vmin = np.min(values_list) if values_list else 0
+                vmax = np.max(values_list) if values_list else 0
+                stats_texts.append(f"{key}: Ave {ave:.1f}  Min {vmin:.1f}  Max {vmax:.1f}")
+
+    # Show statistics at the top right of the graph (position always fixed)
+        if stats_texts:
+            stats_str = "\n".join(stats_texts)
+            self.ax.text(0.99, 0.99, stats_str, transform=self.ax.transAxes,
+                         fontsize=10, color="#e0e0e0", ha="right", va="top",
+                         bbox=dict(facecolor="#222", alpha=0.7, edgecolor="#444", boxstyle="round,pad=0.3"))
+
+    # X axis: 0-30, step 5
+        self.ax.set_xlim(0, 30)
+        xticks = list(range(0, 31, 5))
+        self.ax.set_xticks(xticks)
+        self.ax.set_xticklabels([str(x) for x in xticks])
+
+    # --- Fixed Y axis: usage, temperature, and power graphs ---
+        if self.title in ["CPU Core Usage", "GPU Usage", "RAM Usage"]:
+            self.ax.set_ylim(-5, 105)
+            yticks = list(range(0, 101, 20))
+            self.ax.set_yticks(yticks)
+            self.ax.set_yticklabels([str(y) for y in yticks])
+        elif self.title == "Temperature":
+            self.ax.set_ylim(-5, 105)
+            yticks = list(range(0, 101, 20))
+            self.ax.set_yticks(yticks)
+            self.ax.set_yticklabels([str(y) for y in yticks])
+        elif self.title == "Power Consumption":
+            self.ax.set_ylim(-1, 31)
+            yticks = list(range(0, 31, 5))
+            self.ax.set_yticks(yticks)
+            self.ax.set_yticklabels([str(y) for y in yticks])
+
+        if value_source:
+            legend = self.ax.legend()
+            if legend is not None:
+                legend.get_frame().set_facecolor('#18191c')  # Dark color
+                legend.get_frame().set_edgecolor('none')
+                legend.get_frame().set_alpha(0.2)  # High transparency
+                for text in legend.get_texts():
+                    text.set_color('#e0e0e0')
+
         self.canvas.draw()
+
+    def set_smoothing(self, enabled: bool, alpha: float | None = None):
+        """Enable/disable smoothing or adjust alpha.
+        alpha: new smoothing factor (optional). Higher = follow raw more.
+        """
+        self.enable_smoothing = enabled
+        if alpha is not None and 0 < alpha <= 1:
+            self.smoothing_alpha = alpha
+        # No need to recompute historical EMA for simplicity (low cost tradeoff).
+        self.update_plot()
 
 # ----------------------------- Connection Test Worker -----------------------------
 
@@ -396,19 +505,21 @@ class ConnectionTestWorker(QThread):
 
 class ConnectionDialog(QWidget):
     connection_established = pyqtSignal(str, str, str, int)  # host, user, password, interval
-    
+
     def __init__(self):
         super().__init__()
         self.test_worker = None
+        self._config_path = os.path.join(os.path.expanduser("~"), ".jetson_tegrastats_monitor.json")
         self.init_ui()
-        
+        self._load_last_settings()
+
     def init_ui(self):
         self.setWindowTitle("Jetson TegraStats Monitor - Connection")
         self.setGeometry(300, 300, 400, 300)
         self.setFixedSize(400, 300)
-        
+
         layout = QVBoxLayout()
-        
+
         # Title
         title_label = QLabel("Jetson TegraStats Monitor")
         title_font = QFont()
@@ -417,114 +528,125 @@ class ConnectionDialog(QWidget):
         title_label.setFont(title_font)
         title_label.setAlignment(Qt.AlignCenter)
         layout.addWidget(title_label)
-        
+
         layout.addWidget(QLabel(""))  # Spacer
-        
+
         # Connection form
         form_layout = QGridLayout()
-        
         form_layout.addWidget(QLabel("Host:"), 0, 0)
-        self.host_edit = QLineEdit("10.41.66.20")
+        self.host_edit = QLineEdit("")
         form_layout.addWidget(self.host_edit, 0, 1)
-        
+
         form_layout.addWidget(QLabel("User:"), 1, 0)
-        self.user_edit = QLineEdit("ryogayuzawa")
+        self.user_edit = QLineEdit("")
         form_layout.addWidget(self.user_edit, 1, 1)
-        
+
         form_layout.addWidget(QLabel("Password:"), 2, 0)
         self.password_edit = QLineEdit()
         self.password_edit.setEchoMode(QLineEdit.Password)
         self.password_edit.returnPressed.connect(self.connect_clicked)
         form_layout.addWidget(self.password_edit, 2, 1)
-        
+
         form_layout.addWidget(QLabel("Interval (ms):"), 3, 0)
         self.interval_spin = QSpinBox()
         self.interval_spin.setRange(100, 10000)
         self.interval_spin.setValue(1000)
         form_layout.addWidget(self.interval_spin, 3, 1)
-        
+
         layout.addLayout(form_layout)
-        
         layout.addWidget(QLabel(""))  # Spacer
-        
+
         # Status and buttons
         self.status_label = QLabel("Enter connection details and click Connect")
         self.status_label.setStyleSheet("QLabel { background-color: #f0f0f0; padding: 5px; }")
         self.status_label.setAlignment(Qt.AlignCenter)
         layout.addWidget(self.status_label)
-        
+
         button_layout = QHBoxLayout()
-        
         self.connect_btn = QPushButton("Connect")
         self.connect_btn.clicked.connect(self.connect_clicked)
         self.connect_btn.setDefault(True)
         button_layout.addWidget(self.connect_btn)
-        
         self.cancel_btn = QPushButton("Cancel")
         self.cancel_btn.clicked.connect(self.close)
         button_layout.addWidget(self.cancel_btn)
-        
         layout.addLayout(button_layout)
-        
+
         self.setLayout(layout)
-        
-        # Focus on password field if other fields are filled
+
         if self.host_edit.text() and self.user_edit.text():
             self.password_edit.setFocus()
-    
+
     def connect_clicked(self):
         host = self.host_edit.text().strip()
         user = self.user_edit.text().strip()
         password = self.password_edit.text()
         interval = self.interval_spin.value()
-        
+
         if not host:
             self.status_label.setText("Please enter host address")
             self.host_edit.setFocus()
             return
-            
         if not user:
             self.status_label.setText("Please enter username")
             self.user_edit.setFocus()
             return
-            
         if not password:
             self.status_label.setText("Please enter password")
             self.password_edit.setFocus()
             return
-        
+
         self.status_label.setText("Testing connection...")
         self.connect_btn.setEnabled(False)
-        
-        # Start connection test in background thread
+
         self.test_worker = ConnectionTestWorker(host, user, password)
         self.test_worker.connection_result.connect(self.on_connection_result)
         self.test_worker.start()
-    
+
     def on_connection_result(self, success, message):
         self.status_label.setText(message)
-        
         if success:
             host = self.host_edit.text().strip()
             user = self.user_edit.text().strip()
             password = self.password_edit.text()
             interval = self.interval_spin.value()
-            # Give user a moment to see the success message
+            self._save_last_settings(host, user, interval)
             QTimer.singleShot(1000, lambda: self.emit_and_close(host, user, password, interval))
         else:
-            # Only re-enable button if it's a final failure (not progress update)
             if not message.startswith("Testing") and not message.startswith("Network") and not message.startswith("SSH"):
                 self.connect_btn.setEnabled(True)
-        
         if self.test_worker and self.test_worker.isFinished():
             self.test_worker.wait()
             self.test_worker = None
-    
+
     def emit_and_close(self, host, user, password, interval):
-        # Emit the signal before closing
         self.connection_established.emit(host, user, password, interval)
-        # Close the dialog after a short delay to ensure signal is processed
         QTimer.singleShot(100, self.close)
+
+    def _load_last_settings(self):
+        try:
+            if os.path.isfile(self._config_path):
+                with open(self._config_path, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                host = data.get('host', '')
+                user = data.get('user', '')
+                interval = data.get('interval')
+                if host:
+                    self.host_edit.setText(host)
+                if user:
+                    self.user_edit.setText(user)
+                if isinstance(interval, int):
+                    self.interval_spin.setValue(interval)
+        except Exception:
+            pass
+
+    def _save_last_settings(self, host, user, interval):
+        try:
+            data = {"host": host, "user": user, "interval": int(interval)}
+            with open(self._config_path, 'w', encoding='utf-8') as f:
+                json.dump(data, f)
+        except Exception:
+            pass
 
 # ----------------------------- Main Monitor Window -----------------------------
 
@@ -536,6 +658,7 @@ class TegraStatsMonitor(QMainWindow):
         self.password = password
         self.interval = interval
         self.worker = None
+        self.current_theme = 'dark'
         self.init_ui()
         self.start_monitoring()
         
@@ -548,76 +671,119 @@ class TegraStatsMonitor(QMainWindow):
         
         layout = QVBoxLayout()
         central_widget.setLayout(layout)
-        
+        # (Optional) top style
+        self.apply_theme(self.current_theme)
+
+    # ...Controlsタブを削除...
+
         # Current values display
         current_group = QGroupBox("Current Status")
         current_layout = QGridLayout()
-        
+
         self.power_label = QLabel("Power: -")
         self.gpu_label = QLabel("GPU: -")
         self.ram_label = QLabel("RAM: -")
+        self.swap_label = QLabel("SWAP: -")
         self.temp_label = QLabel("Temperature: -")
-        
+
         # CPU core labels (6 cores)
         self.cpu_labels = []
         for i in range(6):
             label = QLabel(f"CPU{i}: -")
             self.cpu_labels.append(label)
-        
+
         font = QFont()
         font.setPointSize(10)
         font.setBold(True)
-        
+
         # Arrange labels in grid
         current_layout.addWidget(self.power_label, 0, 0)
         current_layout.addWidget(self.gpu_label, 0, 1)
         current_layout.addWidget(self.ram_label, 0, 2)
-        current_layout.addWidget(self.temp_label, 0, 3)
-        
+        current_layout.addWidget(self.swap_label, 0, 3)
+        current_layout.addWidget(self.temp_label, 0, 4)
+
         # CPU cores in second row
         for i, label in enumerate(self.cpu_labels):
             label.setFont(font)
             current_layout.addWidget(label, 1, i)
-        
-        for label in [self.power_label, self.gpu_label, self.ram_label, self.temp_label]:
+
+        for label in [self.power_label, self.gpu_label, self.ram_label, self.swap_label, self.temp_label]:
             label.setFont(font)
-        
+
         current_group.setLayout(current_layout)
         layout.addWidget(current_group)
-        
-        # Graph tabs
-        self.tab_widget = QTabWidget()
-        
-        # Power graph
+
+        # 5 Graphs in 2x2+1 grid
         self.power_graph = GraphWidget("Power Consumption", "Power (W)")
-        self.tab_widget.addTab(self.power_graph, "Power")
-        
-        # CPU cores graph
         self.cpu_graph = GraphWidget("CPU Core Usage", "Usage (%)")
-        self.tab_widget.addTab(self.cpu_graph, "CPU Cores")
-        
-        # GPU graph
         self.gpu_graph = GraphWidget("GPU Usage", "Usage (%)")
-        self.tab_widget.addTab(self.gpu_graph, "GPU")
-        
-        # RAM graph
         self.ram_graph = GraphWidget("RAM Usage", "Usage (%)")
-        self.tab_widget.addTab(self.ram_graph, "RAM")
-        
-        # Temperature graph
         self.temp_graph = GraphWidget("Temperature", "Temperature (°C)")
-        self.tab_widget.addTab(self.temp_graph, "Temperature")
-        
-        layout.addWidget(self.tab_widget)
-        
-        # Log display
-        log_group = QGroupBox("Log")
-        log_layout = QVBoxLayout()
-        self.log_text = QTextEdit()
-        self.log_text.setMaximumHeight(150)
-        log_layout.addWidget(self.log_text)
-        log_group.setLayout(log_layout)
-        layout.addWidget(log_group)
+
+        graph_grid = QGridLayout()
+        graph_grid.setSpacing(12)
+        graph_grid.setContentsMargins(0, 0, 0, 0)
+        # 2x2 grid
+        graph_grid.addWidget(self.power_graph, 0, 0)
+        graph_grid.addWidget(self.cpu_graph, 0, 1)
+        graph_grid.addWidget(self.gpu_graph, 1, 0)
+        graph_grid.addWidget(self.ram_graph, 1, 1)
+        # Last graph centered below
+        graph_grid.addWidget(self.temp_graph, 2, 0, 1, 2)
+
+        layout.addLayout(graph_grid)
+
+    # ...Log部分を削除...
+
+    # ---------------- Theme & UI Enhancements -----------------
+    def toggle_theme(self):
+        self.current_theme = 'light' if self.current_theme == 'dark' else 'dark'
+        self.apply_theme(self.current_theme)
+        self.theme_btn.setText("Switch Dark Theme" if self.current_theme == 'light' else "Switch Light Theme")
+
+    def apply_theme(self, theme: str):
+        # Consolas font for all widgets
+        font_css = "font-family: 'Consolas', 'monospace';"
+        if theme == 'dark':
+            palette_css = f"""
+            QWidget {{ background-color: #1e1f23; color: #e0e0e0; {font_css} }}
+            QGroupBox {{ border: 1px solid #3a3d41; border-radius: 6px; margin-top: 6px; padding: 6px; {font_css} }}
+            QGroupBox::title {{ subcontrol-origin: margin; left: 10px; padding: 0 4px; {font_css} }}
+            QPushButton {{ background:#2d2f33; border:1px solid #4a4d52; border-radius:4px; padding:6px 10px; {font_css} }}
+            QPushButton:hover {{ background:#3a3d41; }}
+            QPushButton:pressed {{ background:#2a2c2f; }}
+            QLineEdit, QSpinBox, QTextEdit {{ background:#2a2c30; border:1px solid #4a4d52; border-radius:4px; {font_css} }}
+            QTabBar::tab {{ background:#2d2f33; padding:6px 12px; border:1px solid #3a3d41; border-bottom:none; {font_css} }}
+            QTabBar::tab:selected {{ background:#3a3d41; }}
+            QScrollBar:vertical {{ background:#2a2c30; width:12px; }}
+            QSlider::groove:horizontal {{ height:6px; background:#3a3d41; border-radius:3px; }}
+            QSlider::handle:horizontal {{ background:#5c97ff; width:14px; margin:-4px 0; border-radius:7px; }}
+            QLabel#statusLabel {{ background:#2a2c30; {font_css} }}
+            """
+        else:
+            palette_css = f"""
+            QWidget {{ background:#f6f7fb; color:#202124; {font_css} }}
+            QGroupBox {{ border:1px solid #c9ccd1; border-radius:6px; margin-top:6px; padding:6px; {font_css} }}
+            QGroupBox::title {{ subcontrol-origin: margin; left: 10px; padding:0 4px; {font_css} }}
+            QPushButton {{ background:#ffffff; border:1px solid #c9ccd1; border-radius:4px; padding:6px 10px; {font_css} }}
+            QPushButton:hover {{ background:#e9eef4; }}
+            QPushButton:pressed {{ background:#dde3ea; }}
+            QLineEdit, QSpinBox, QTextEdit {{ background:#ffffff; border:1px solid #c9ccd1; border-radius:4px; {font_css} }}
+            QTabBar::tab {{ background:#e2e6ea; padding:6px 12px; border:1px solid #c9ccd1; border-bottom:none; {font_css} }}
+            QTabBar::tab:selected {{ background:#ffffff; }}
+            QSlider::groove:horizontal {{ height:6px; background:#d0d4d9; border-radius:3px; }}
+            QSlider::handle:horizontal {{ background:#4285f4; width:14px; margin:-4px 0; border-radius:7px; }}
+            QLabel#statusLabel {{ background:#eceff3; {font_css} }}
+            """
+        self.setStyleSheet(palette_css)
+
+    def on_smoothing_changed(self):
+        enabled = self.smooth_check.isChecked()
+        alpha = self.smooth_slider.value() / 100.0
+        graphs = [self.power_graph, self.cpu_graph, self.gpu_graph, self.ram_graph, self.temp_graph]
+        for g in graphs:
+            g.set_smoothing(enabled, alpha)
 
     def start_monitoring(self):
         self.worker = TegraStatsWorker(self.host, self.user, self.password, interval=self.interval)
@@ -655,12 +821,25 @@ class TegraStatsMonitor(QMainWindow):
         ram_total = ram.get('total', 1)
         ram_pct = (ram_used / ram_total) * 100 if ram_total > 0 else 0
         self.ram_label.setText(f"RAM: {ram_used}/{ram_total}MB ({ram_pct:.1f}%)")
+
+        swap = data.get('swap_MB', {})
+        swap_used = swap.get('used', 0)
+        swap_total = swap.get('total', 1)
+        swap_pct = (swap_used / swap_total) * 100 if swap_total > 0 else 0
+        self.swap_label.setText(f"SWAP: {swap_used}/{swap_total}MB ({swap_pct:.1f}%)")
         
         temps = data.get('temps_C', {})
         temp_strs = []
         for key in ['cpu', 'gpu', 'tj']:
             if key in temps:
-                display_name = "Thermal Junction" if key == "tj" else key
+                if key == 'cpu':
+                    display_name = 'CPU'
+                elif key == 'gpu':
+                    display_name = 'GPU'
+                elif key == 'tj':
+                    display_name = 'Thermal Junction'
+                else:
+                    display_name = key
                 temp_strs.append(f"{display_name}:{temps[key]:.1f}°C")
         self.temp_label.setText(f"Temperature: {' '.join(temp_strs)}")
         
@@ -692,28 +871,11 @@ class TegraStatsMonitor(QMainWindow):
             if temp_data:
                 self.temp_graph.add_data(timestamp, **temp_data)
         
-        # Add log entry
-        time_str = datetime.fromtimestamp(timestamp).strftime('%H:%M:%S')
-        core_strs = []
-        for i, core in enumerate(cores[:6]):  # Show first 6 cores
-            core_strs.append(f"C{i}:{core['util_pct']}%")
-        cpu_detail = " ".join(core_strs) if core_strs else "CPU:-"
-        
-        log_msg = f"[{time_str}] P:{power_w:.2f}W {cpu_detail} GPU:{gpu_util}% RAM:{ram_pct:.1f}%"
-        self.log_text.append(log_msg)
-        
-        # Limit log length
-        if self.log_text.document().blockCount() > 100:
-            cursor = self.log_text.textCursor()
-            cursor.movePosition(cursor.Start)
-            cursor.select(cursor.BlockUnderCursor)
-            cursor.removeSelectedText()
-            cursor.deleteChar()
+    # ...Log出力を削除...
             
     def handle_error(self, error):
-        # Log error to the log area instead of status label
-        time_str = datetime.now().strftime('%H:%M:%S')
-        self.log_text.append(f"[{time_str}] ERROR: {error}")
+        # エラーは何もしない（または必要なら別途UIに表示）
+        pass
         
     def closeEvent(self, event):
         if self.worker:
