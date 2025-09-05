@@ -241,10 +241,10 @@ class TegraStatsWorker(QThread):
 class GraphWidget(QWidget):
     def __init__(self, title, ylabel, max_points=100, smoothing_alpha=0.3, fixed_height=320):
         super().__init__()
+        self.fixed_height = fixed_height  # Fixed height (user request)
         self.title = title
         self.ylabel = ylabel
         self.max_points = max_points
-        self.fixed_height = fixed_height  # 固定高さ (ユーザー要望)
         
         # Smoothing parameters
         # Exponential Moving Average (EMA): s_t = a * x_t + (1-a) * s_{t-1}
@@ -260,8 +260,8 @@ class GraphWidget(QWidget):
         layout.setContentsMargins(0,0,0,0)
         layout.addWidget(self.canvas)
         self.setLayout(layout)
-
-        # 固定高さ設定（幅はリサイズ可 / 高さは一定）
+        
+        # Set fixed height (width is resizable / height is fixed)
         if self.fixed_height:
             self.canvas.setFixedHeight(self.fixed_height)
             self.setMinimumHeight(self.fixed_height + 10)
@@ -278,7 +278,7 @@ class GraphWidget(QWidget):
         self.setup_plot()
 
     def setup_plot(self):
-        # Background and border for Task Manager style
+        
         self.ax.set_facecolor('#18191c')
         self.figure.set_facecolor('#18191c')
         for spine in self.ax.spines.values():
@@ -512,7 +512,7 @@ class ConnectionDialog(QWidget):
     def __init__(self):
         super().__init__()
         self.test_worker = None
-        self._config_path = os.path.join(os.path.expanduser("~"), ".jetson_tegrastats_monitor.json")
+        self._config_path = os.path.join(os.path.abspath(os.path.dirname(sys.argv[0])), "settings.json")
         self.init_ui()
         self._apply_dark_theme()
         self._load_last_settings()
@@ -538,15 +538,10 @@ class ConnectionDialog(QWidget):
 
     def init_ui(self):
         self.setWindowTitle("Jetson TegraStats Monitor - Connection")
-        # Enlarged initial dialog window size
-        self.setGeometry(300, 240, 640, 420)
-        self.setFixedSize(640, 420)
-        self.setWindowTitle("Jetson TegraStats Monitor - Connection")
-        # Enlarged initial dialog window size
         self.setGeometry(300, 240, 640, 420)
         self.setFixedSize(640, 420)
 
-        layout = QVBoxLayout()
+        main_layout = QVBoxLayout()
 
         # Title
         title_label = QLabel("Jetson TegraStats Monitor")
@@ -555,41 +550,51 @@ class ConnectionDialog(QWidget):
         title_font.setBold(True)
         title_label.setFont(title_font)
         title_label.setAlignment(Qt.AlignCenter)
-        layout.addWidget(title_label)
+        main_layout.addWidget(title_label)
+        main_layout.addWidget(QLabel(""))  # Spacer
 
-        layout.addWidget(QLabel(""))  # Spacer
-
-        # Connection form
+        # Form
         form_layout = QGridLayout()
-        form_layout.addWidget(QLabel("Host:"), 0, 0)
+        row = 0
+        form_layout.addWidget(QLabel("Host:"), row, 0)
         self.host_edit = QLineEdit("")
-        form_layout.addWidget(self.host_edit, 0, 1)
+        form_layout.addWidget(self.host_edit, row, 1)
+        row += 1
 
-        form_layout.addWidget(QLabel("User:"), 1, 0)
+        form_layout.addWidget(QLabel("User:"), row, 0)
         self.user_edit = QLineEdit("")
-        form_layout.addWidget(self.user_edit, 1, 1)
+        form_layout.addWidget(self.user_edit, row, 1)
+        row += 1
 
-        form_layout.addWidget(QLabel("Password:"), 2, 0)
+        form_layout.addWidget(QLabel("Password:"), row, 0)
         self.password_edit = QLineEdit()
         self.password_edit.setEchoMode(QLineEdit.Password)
         self.password_edit.returnPressed.connect(self.connect_clicked)
-        form_layout.addWidget(self.password_edit, 2, 1)
+        form_layout.addWidget(self.password_edit, row, 1)
+        row += 1
 
-        form_layout.addWidget(QLabel("Interval (ms):"), 3, 0)
+        form_layout.addWidget(QLabel("Interval (ms):"), row, 0)
         self.interval_spin = QSpinBox()
         self.interval_spin.setRange(100, 10000)
         self.interval_spin.setValue(1000)
-        form_layout.addWidget(self.interval_spin, 3, 1)
+        form_layout.addWidget(self.interval_spin, row, 1)
+        row += 1
 
-        layout.addLayout(form_layout)
-        layout.addWidget(QLabel(""))  # Spacer
+        # Remember settings
+        self.remember_check = QCheckBox("Remember settings")
+        self.remember_check.setChecked(True)
+        form_layout.addWidget(self.remember_check, row, 0, 1, 2)
 
-        # Status and buttons
+        main_layout.addLayout(form_layout)
+        main_layout.addWidget(QLabel(""))  # Spacer
+
+        # Status
         self.status_label = QLabel("Enter connection details and click Connect")
         self.status_label.setObjectName("statusLabel")
         self.status_label.setAlignment(Qt.AlignCenter)
-        layout.addWidget(self.status_label)
+        main_layout.addWidget(self.status_label)
 
+        # Buttons
         button_layout = QHBoxLayout()
         self.connect_btn = QPushButton("Connect")
         self.connect_btn.clicked.connect(self.connect_clicked)
@@ -599,9 +604,9 @@ class ConnectionDialog(QWidget):
         self.cancel_btn = QPushButton("Cancel")
         self.cancel_btn.clicked.connect(self.close)
         button_layout.addWidget(self.cancel_btn)
-        layout.addLayout(button_layout)
+        main_layout.addLayout(button_layout)
 
-        self.setLayout(layout)
+        self.setLayout(main_layout)
 
         if self.host_edit.text() and self.user_edit.text():
             self.password_edit.setFocus()
@@ -639,7 +644,11 @@ class ConnectionDialog(QWidget):
             user = self.user_edit.text().strip()
             password = self.password_edit.text()
             interval = self.interval_spin.value()
-            self._save_last_settings(host, user, interval)
+            if self.remember_check.isChecked():
+                self._save_last_settings(host, user, interval, remember=True)
+            else:
+                # Save preference that remember is off (without host/user) so next launch starts clean
+                self._save_last_settings('', '', interval, remember=False)
             QTimer.singleShot(1000, lambda: self.emit_and_close(host, user, password, interval))
         else:
             if not message.startswith("Testing") and not message.startswith("Network") and not message.startswith("SSH"):
@@ -649,6 +658,14 @@ class ConnectionDialog(QWidget):
             self.test_worker = None
 
     def emit_and_close(self, host, user, password, interval):
+        # 最終的な接続成功直前で保存（接続テスト成功時ではなく確定時）
+        try:
+            if hasattr(self, 'remember_check') and self.remember_check.isChecked():
+                self._save_last_settings(host, user, interval, remember=True)
+            else:
+                self._save_last_settings('', '', interval, remember=False)
+        except Exception:
+            pass
         self.connection_established.emit(host, user, password, interval)
         QTimer.singleShot(100, self.close)
 
@@ -657,21 +674,52 @@ class ConnectionDialog(QWidget):
             if os.path.isfile(self._config_path):
                 with open(self._config_path, 'r', encoding='utf-8') as f:
                     data = json.load(f)
-                host = data.get('host', '')
-                user = data.get('user', '')
-                interval = data.get('interval')
-                if host:
-                    self.host_edit.setText(host)
-                if user:
-                    self.user_edit.setText(user)
-                if isinstance(interval, int):
-                    self.interval_spin.setValue(interval)
+                remember = data.get('remember', True)
+                self.remember_check.setChecked(remember)
+
+                settings = data.get('settings') if isinstance(data.get('settings'), dict) else None
+                if settings is None:
+                    settings = {
+                        'host': data.get('host'),
+                        'user': data.get('user'),
+                        'interval': data.get('interval')
+                    }
+
+                if settings:
+                    interval = settings.get('interval')
+                    try:
+                        if interval is not None:
+                            self.interval_spin.setValue(int(interval))
+                    except Exception:
+                        pass
+                    if remember:
+                        host = settings.get('host')
+                        user = settings.get('user')
+                        if host is not None and str(host).strip() != '':
+                            self.host_edit.setText(str(host))
+                        if user is not None and str(user).strip() != '':
+                            self.user_edit.setText(str(user))
         except Exception:
             pass
 
-    def _save_last_settings(self, host, user, interval):
+    def _save_last_settings(self, host, user, interval, remember=True):
         try:
-            data = {"host": host, "user": user, "interval": int(interval)}
+            if remember:
+                data = {
+                    "remember": True,
+                    "settings": {
+                        "host": host,
+                        "user": user,
+                        "interval": int(interval)
+                    }
+                }
+            else:
+                data = {
+                    "remember": False,
+                    "settings": {
+                        "interval": int(interval)
+                    }
+                }
             with open(self._config_path, 'w', encoding='utf-8') as f:
                 json.dump(data, f)
         except Exception:
@@ -688,8 +736,8 @@ class TegraStatsMonitor(QMainWindow):
         self.interval = interval
         self.worker = None
         self.current_theme = 'dark'
-        # intervalはmsなので、30秒分のデータ点数を計算
-        self._graph_max_points = max(30_000 // max(1, self.interval), 10)  # 最低10点は確保
+    # Calculate number of data points for 30 seconds (interval is ms)
+        self._graph_max_points = max(30_000 // max(1, self.interval), 10)  # At least 10 points
         self.init_ui()
         self.start_monitoring()
         
@@ -707,7 +755,7 @@ class TegraStatsMonitor(QMainWindow):
         # (Optional) top style
         self.apply_theme(self.current_theme)
 
-        # Current values display
+    # Current values display
         current_group = QGroupBox("Current Status")
         current_layout = QGridLayout()
 
@@ -717,7 +765,7 @@ class TegraStatsMonitor(QMainWindow):
         self.swap_label = QLabel("SWAP: -")
         self.temp_label = QLabel("Temperature: -")
 
-        # CPU core labels (6 cores)
+    # CPU core labels (6 cores)
         self.cpu_labels = []
         for i in range(6):
             label = QLabel(f"CPU{i}: -")
@@ -727,14 +775,14 @@ class TegraStatsMonitor(QMainWindow):
         font.setPointSize(10)
         font.setBold(True)
 
-        # Arrange labels in grid
+    # Arrange labels in grid
         current_layout.addWidget(self.power_label, 0, 0)
         current_layout.addWidget(self.gpu_label, 0, 1)
         current_layout.addWidget(self.ram_label, 0, 2)
         current_layout.addWidget(self.swap_label, 0, 3)
         current_layout.addWidget(self.temp_label, 0, 4)
 
-        # CPU cores in second row
+    # CPU cores in second row
         for i, label in enumerate(self.cpu_labels):
             label.setFont(font)
             current_layout.addWidget(label, 1, i)
@@ -753,22 +801,22 @@ class TegraStatsMonitor(QMainWindow):
         self.ram_graph = GraphWidget("RAM Usage", "Usage (%)", max_points=mp, fixed_height=260)
         self.temp_graph = GraphWidget("Temperature", "Temperature (°C)", max_points=mp, fixed_height=260)
 
-        # Set all graph widgets to expanding size policy
+    # Set all graph widgets to expanding size policy
         for graph in [self.power_graph, self.cpu_graph, self.gpu_graph, self.ram_graph, self.temp_graph]:
             graph.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
 
         graph_grid = QGridLayout()
         graph_grid.setSpacing(12)
         graph_grid.setContentsMargins(12, 12, 12, 12)  # Add space around the graphs
-        # 2x2 grid
+    # 2x2 grid
         graph_grid.addWidget(self.power_graph, 0, 0)
         graph_grid.addWidget(self.cpu_graph, 0, 1)
         graph_grid.addWidget(self.gpu_graph, 1, 0)
         graph_grid.addWidget(self.ram_graph, 1, 1)
-        # Last graph centered below
+    # Last graph centered below
         graph_grid.addWidget(self.temp_graph, 2, 0, 1, 2)
 
-        # Set stretch so graphs expand and fill space
+    # Set stretch so graphs expand and fill space
         graph_grid.setRowStretch(0, 1)
         graph_grid.setRowStretch(1, 1)
         graph_grid.setRowStretch(2, 2)  # Give more space to the temperature graph
@@ -776,7 +824,7 @@ class TegraStatsMonitor(QMainWindow):
         graph_grid.setColumnStretch(1, 1)
 
         layout.addLayout(graph_grid)
-        # Add extra stretch to create bottom margin
+    # Add extra stretch to create bottom margin
         layout.addStretch(1)
     # ---------------- Theme & UI Enhancements -----------------
     def toggle_theme(self):
@@ -916,7 +964,7 @@ class TegraStatsMonitor(QMainWindow):
     # ...Log出力を削除...
             
     def handle_error(self, error):
-        # エラーは何もしない（または必要なら別途UIに表示）
+    # Do nothing for errors (or show in UI if needed)
         pass
         
     def closeEvent(self, event):
@@ -934,12 +982,12 @@ def build_argparser():
 
 if __name__ == "__main__":
     args = build_argparser().parse_args()
-    
+
     app = QApplication(sys.argv)
-    
+
     # Global reference to monitor window to prevent garbage collection
     monitor_window = None
-    
+
     def on_connection_established(host, user, password, interval):
         global monitor_window
         # Create and show monitor window
@@ -948,16 +996,19 @@ if __name__ == "__main__":
         # Bring window to front
         monitor_window.raise_()
         monitor_window.activateWindow()
-    
+
     # Show connection dialog first
     connection_dialog = ConnectionDialog()
-    
-    # Set default values from command line arguments
-    connection_dialog.host_edit.setText(args.host)
-    connection_dialog.user_edit.setText(args.user)
-    connection_dialog.interval_spin.setValue(args.interval)
-    
+
+    # Only override loaded settings if args are not default
+    if args.host != "192.168.1.100":
+        connection_dialog.host_edit.setText(args.host)
+    if args.user != "default":
+        connection_dialog.user_edit.setText(args.user)
+    if args.interval != 1000:
+        connection_dialog.interval_spin.setValue(args.interval)
+
     connection_dialog.connection_established.connect(on_connection_established)
     connection_dialog.show()
-    
+
     sys.exit(app.exec_())
