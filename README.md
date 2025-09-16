@@ -12,27 +12,8 @@ A real-time monitoring tool for NVIDIA Jetson devices with a PyQt5 GUI interface
 - **Multi-core CPU Tracking**: Individual monitoring of all 6 CPU cores
 - **GPU Usage**: Real-time GPU utilization tracking
 - **Memory Monitoring**: RAM usage with visual indicators
-- **Temperature Sensors**: Thermal Junction, CPU, and GPU temperatures
-- **Power Consumption**: Real-time power usage monitoring
-- **Interactive Graphs**: Tabbed interface with matplotlib-based graphs
-- **SSH Connection**: Secure remote monitoring over SSH
-- **Connection Testing**: Built-in SSH connection validation
-- **Clean Interface**: Two-stage UI design (connection → monitoring)
 
 ## Screenshots
-
-### Connection Dialog
-The application starts with a connection setup dialog where you enter your Jetson device credentials.
-
-### Monitoring Interface
-- **Current Values**: Real-time display of key metrics
-- **Power Graph**: Power consumption over time
-- **CPU Graph**: Individual core usage tracking
-- **GPU Graph**: GPU utilization monitoring
-- **RAM Graph**: Memory usage visualization
-- **Temperature Graph**: Thermal Junction, CPU, and GPU temperatures
-
-#### Example Screenshot
 ![Jetson Usage Monitor Screenshot](screenshot.png)
 
 ## Requirements
